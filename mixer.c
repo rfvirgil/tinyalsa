@@ -170,30 +170,7 @@ static bool mixer_ctl_get_elem_info(struct mixer_ctl* ctl)
         ctl->info_retrieved = true;
     }
 
-    if (ctl->info->type != SNDRV_CTL_ELEM_TYPE_ENUMERATED || ctl->ename)
-        return true;
-
-    struct snd_ctl_elem_info tmp;
-    char** enames = calloc(ctl->info->value.enumerated.items, sizeof(char*));
-    if (!enames)
-        return false;
-
-    for (unsigned int i = 0; i < ctl->info->value.enumerated.items; i++) {
-        memset(&tmp, 0, sizeof(tmp));
-        tmp.id.numid = ctl->info->id.numid;
-        tmp.value.enumerated.item = i;
-        if (ioctl(ctl->mixer->fd, SNDRV_CTL_IOCTL_ELEM_INFO, &tmp) < 0)
-            goto fail;
-        enames[i] = strdup(tmp.value.enumerated.name);
-        if (!enames[i])
-            goto fail;
-    }
-    ctl->ename = enames;
     return true;
-
-fail:
-    free(enames);
-    return false;
 }
 
 const char *mixer_get_name(struct mixer *mixer)
@@ -579,11 +556,50 @@ unsigned int mixer_ctl_get_num_enums(struct mixer_ctl *ctl)
     return ctl->info->value.enumerated.items;
 }
 
+int mixer_ctl_fill_enum_string(struct mixer_ctl *ctl)
+{
+    struct snd_ctl_elem_info tmp;
+    unsigned int m;
+    char **enames;
+
+    if (ctl->ename) {
+        return 0;
+    }
+
+    enames = calloc(ctl->info->value.enumerated.items, sizeof(char*));
+    if (!enames)
+        goto fail;
+    for (m = 0; m < ctl->info->value.enumerated.items; m++) {
+        memset(&tmp, 0, sizeof(tmp));
+        tmp.id.numid = ctl->info->id.numid;
+        tmp.value.enumerated.item = m;
+        if (ioctl(ctl->mixer->fd, SNDRV_CTL_IOCTL_ELEM_INFO, &tmp) < 0)
+            goto fail;
+        enames[m] = strdup(tmp.value.enumerated.name);
+        if (!enames[m])
+            goto fail;
+    }
+    ctl->ename = enames;
+    return 0;
+
+fail:
+    if (enames) {
+        for (m = 0; m < ctl->info->value.enumerated.items; m++) {
+            if (enames[m]) {
+                free(enames[m]);
+            }
+        }
+        free(enames);
+    }
+    return -1;
+}
+
 const char *mixer_ctl_get_enum_string(struct mixer_ctl *ctl,
                                       unsigned int enum_id)
 {
     if (!ctl || (ctl->info->type != SNDRV_CTL_ELEM_TYPE_ENUMERATED) ||
-        (enum_id >= ctl->info->value.enumerated.items))
+        (enum_id >= ctl->info->value.enumerated.items) ||
+        mixer_ctl_fill_enum_string(ctl) != 0)
         return NULL;
 
     return (const char *)ctl->ename[enum_id];
@@ -595,7 +611,8 @@ int mixer_ctl_set_enum_by_string(struct mixer_ctl *ctl, const char *string)
     struct snd_ctl_elem_value ev;
     int ret;
 
-    if (!ctl || (ctl->info->type != SNDRV_CTL_ELEM_TYPE_ENUMERATED))
+    if (!ctl || (ctl->info->type != SNDRV_CTL_ELEM_TYPE_ENUMERATED) ||
+        mixer_ctl_fill_enum_string(ctl) != 0)
         return -EINVAL;
 
     num_enums = ctl->info->value.enumerated.items;
